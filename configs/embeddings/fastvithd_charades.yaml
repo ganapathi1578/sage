@@ -1,0 +1,57 @@
+# FastViTHD frame-level feature extraction.
+# Relative paths resolve from the Sage repository root (parent of scripts/).
+
+run:
+  name: charades_fastvithd_256_1fps
+  seed: 42
+  resume: true
+  overwrite: false
+  limit_videos: null       # Set to 10 for a smoke test.
+  progress_every_videos: 10
+
+input:
+  video_dir: data/datasets/charades/Charades_v1_480
+  recursive: true
+  extensions: [".mp4", ".avi", ".mov", ".mkv", ".webm"]
+
+model:
+  # This Transformers-compatible checkpoint exposes FastViTHD as model.model.vision_tower.
+  # Avoid apple/FastVLM-0.5B legacy checkpoints whose config may point at mobileclip_l_1024.
+  model_id: KamilaMila/FastVLM-0.5B
+  revision: main
+  trust_remote_code: false
+  feature_space: raw_vision       # raw_vision | fastvlm_projected
+  # raw_vision preserves the vision encoder channel space for a trainable downstream projector.
+  # fastvlm_projected stores features after FastVLM's pretrained MLP projector into its LM space.
+
+preprocessing:
+  image_size: 256                 # Try 256, 512, 768, 1024 (multiples of 64 recommended).
+  resize_mode: letterbox          # letterbox preserves the whole frame; center_crop matches a crop-based image setup.
+  interpolation: bicubic          # bicubic | bilinear | area
+  color_order: RGB
+  rescale_factor: 0.00392156862745098
+  # FastVLM's published processor uses mean=[0,0,0] and std=[1,1,1]; do not apply ImageNet normalization.
+
+sampling:
+  sample_fps: 1.0                 # Extract once at the highest FPS planned for training.
+  # No windows or temporal pooling during extraction. Preserve frame-level timestamps.
+
+embeddings:
+  spatial_pool_grid_size: 0       # 0 = keep native grid; otherwise adaptive-pool to G x G tokens/frame.
+                                  # At 512px, G=4 usually stores 16 tokens/frame instead of all native tokens.
+  save_frame_pooled: true         # Also save mean-pooled [frames, channels] features.
+  save_dtype: float16             # float16 | float32
+
+storage:
+  format: zarr_v2
+  output_store: data/embeddings/charades_v1_480/fastvithd_256_1fps.zarr
+  chunk_frames: 16                # Efficient temporal slice reads.
+  compression: zstd               # zstd | lz4 | none
+  compression_level: 3
+
+runtime:
+  device: cuda:0                  # auto | cpu | cuda:0 | cuda:1 | cuda:2 ...
+  num_threads: 4
+  frame_batch_size: 128              # Lower if GPU RAM is limited; raises automatically split on CUDA OOM.
+  amp: true
+  amp_dtype: float16              # float16 is a safe choice for Turing GPUs (e.g. RTX 2080 Ti).
