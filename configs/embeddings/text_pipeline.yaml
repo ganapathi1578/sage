@@ -1,0 +1,63 @@
+# Install these files directly into the sage repository: scripts/ and configs/. Paths are relative to sage_root.
+version: 1
+
+paths:
+  # This config lives at sage/configs/text_pipeline.yaml; .. resolves to sage/.
+  sage_root: ../..
+  # Point this to the generated QA Parquet dataset. It should contain train/val/test
+  # directories or Parquet files with a `split` column.
+  input_root: UniProp/data/generated
+  analysis_root: UniProp/data/analysis
+  embeddings_root: data/embeddings/text
+  compact_dir_name: compact
+  dictionary_filename: sentence_dictionary.parquet
+
+dataset:
+  scale: smoke                    # smoke | 1m | 2m | 100m | full
+  scale_limits:
+    smoke: 1000                    # total QA rows, proportionally allocated across split folders
+    10k: 10000
+    100k: 100000
+    1m: 1000000
+    10m: 10000000
+    100m: 100000000
+    full: null                    # null = all rows
+  split_names: [train, val, test]
+  input_glob: "**/*.parquet"
+  query_column: query
+  options_column: options
+  query_id_column: query_sentence_id
+  option_ids_column: option_sentence_ids
+  split_column: split
+  batch_rows: 4096
+  sentence_id_type: int32         # int32 supports up to ~2.1B unique sentences
+  parquet_compression: zstd
+  normalize:
+    unicode: NFKC
+    collapse_whitespace: true
+    strip: true
+    casefold: false               # keep case and punctuation distinctions
+
+analysis:
+  overwrite: false                # true deletes/rebuilds this scale's analysis directory
+  sqlite_cache_mb: 256
+  resume: true
+  keep_sqlite_database: false    # database is only needed while building/compacting IDs
+  id_lookup_cache_entries: 500000
+  export_dictionary_csv: false    # do not write enormous CSVs at 100M scale
+
+embedding:
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  model_slug: all-MiniLM-L6-v2    # used in the output directory name
+  revision: main
+  device: auto                    # auto | cpu | cuda | cuda:0, etc.
+  batch_size: 256
+  max_seq_length: null            # null uses the model's configured limit
+  normalize_embeddings: false
+  storage_dtype: float16          # float16 | float32
+  rows_per_chunk: 50000           # contiguous sentence IDs per .npy shard
+  shared_dir_name: shared
+  show_progress_bar: True
+  resume: true
+  overwrite: false                # true deletes/rebuilds this model+scale embedding directory
+  splits: [train, val, test]
