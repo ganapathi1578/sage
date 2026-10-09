@@ -1,0 +1,175 @@
+# Sage text-ID and embedding pipeline
+
+Install these files directly at the **root of your existing `sage/` repository**. The pipeline scripts and configuration live in `sage/scripts/` and `sage/configs/`; generated ID-coded data remains under `sage/UniProp/data/analysis/`, and embeddings under `sage/data/embeddings/text/`.
+
+## Repository layout
+
+```text
+sage/
+├── configs/
+│   └──embeddings/
+|      └── text_pipeline.yaml
+├── scripts/
+│   ├── __init__.py
+│   ├── build_sentence_ids.py
+│   ├── encode_text_embeddings.py
+├── utils/
+│   ├── text_embedding_store.py
+│   └── text_pipeline_common.py
+├── UniProp/
+│   └── data/
+│       ├── generated/                  # configure paths.input_root
+│       └── analysis/<scale>/           # generated ID-coded Parquet + dictionary
+└── data/embeddings/text/<model>/<scale>/
+    ├── manifest.json
+    ├── shared/                         # each unique sentence vector stored once
+    ├── train/manifest.json
+    ├── val/manifest.json
+    └── test/manifest.json
+```
+
+## 1. Install dependencies
+
+From the active Sage environment, run:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+This installs PyArrow, PyYAML, NumPy, and Sentence Transformers. Keep the working PyTorch/CUDA build in your environment; verify `torch.cuda.is_available()` if you plan to encode on GPU.
+
+## 2. Configure paths and scale
+
+Edit `configs/text_pipeline.yaml`. All relative paths resolve from the Sage repository root, determined by `paths.sage_root` relative to the config file.
+
+- `paths.input_root`: source Parquet data, default `UniProp/data/generated`
+- `paths.analysis_root`: ID-coded output, default `UniProp/data/analysis`
+- `paths.embeddings_root`: embedding output, default `data/embeddings/text`
+- `dataset.scale`: `smoke`, `1m`, `2m`, `100m`, or `full`
+- `dataset.scale_limits`: maximum QA rows per run; `full: null` means no cap
+- `dataset.query_column` / `options_column`: source columns to encode
+- `embedding.model_name`: Sentence Transformers model ID
+- `embedding.device`: `auto`, `cpu`, `cuda`, or `cuda:0`
+- `embedding.storage_dtype`: `float16` or `float32`
+
+The input should be Parquet shards in split folders (preferably `train/`, `val/`, and `test/`) or Parquet files with a split column. Scale caps are total QA-row caps. When data is organized in split folders, the cap is apportioned proportionally across detected split folders. A flat directory is selected in deterministic file/row order, so use split folders if you need a representative smoke subset for every split.
+
+## 3. Stage one — build sentence IDs
+
+Run from the Sage repository root:
+
+```bash
+python scripts/build_sentence_ids.py \
+  --config configs/embeddings/text_pipeline.yaml \
+  --scale smoke
+```
+
+This pass normalizes and deduplicates query/option text in a disk-backed SQLite database, then rewrites the Parquet shards in Arrow batches. All splits share one global dictionary and stable IDs within that scale. The output is:
+
+```text
+UniProp/data/analysis/<scale>/
+├── sentence_dictionary.parquet
+├── summary.json
+├── analysis_state.json
+└── compact/                    # original columns except query/options, replaced with IDs
+```
+
+`query` becomes `query_sentence_id`; `options` becomes `option_sentence_ids`. Other columns, including labels and metadata, are preserved. ID 0 is reserved for null/missing text; real IDs start at 1. Default normalization uses Unicode NFKC and whitespace collapsing while preserving case and punctuation.
+
+The stage checkpoints source-shard progress and supports resume. It refuses to silently reuse incompatible output. To intentionally rebuild the selected scale, use `--overwrite` or set `analysis.overwrite: true` in the YAML. This removes that scale's analysis output before rebuilding.
+
+## 4. Stage two — encode the unique sentence dictionary
+
+```bash
+python scripts/encode_text_embeddings.py \
+  --config configs/embeddings/text_pipeline.yaml \
+  --scale smoke
+```
+
+Default model: `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions). It streams the dictionary, encodes each unique sentence once, and writes resumable NumPy `.npy` shards in FP16 by default.
+
+Output:
+
+```text
+data/embeddings/text/<model_slug>/<scale>/
+├── manifest.json
+├── shared/part-000000.npy
+├── train/manifest.json
+├── val/manifest.json
+└── test/manifest.json
+```
+
+Vectors are stored once in `shared/`; split-specific manifests point back to the shared vector table and ID-coded Parquet location. This avoids duplicating embeddings for text shared between splits. IDs 1..N map to contiguous rows 0..N-1 across the shard files. ID 0 returns a zero vector.
+
+Resume checks model, revision, dictionary metadata, dtype, normalization, sequence length, and chunk size. Do not change these during a run and expect old shards to be compatible. Use `--overwrite` or `embedding.overwrite: true` to rebuild the embedding output.
+
+## 5. Load embeddings in a training script
+
+When `sage/` is the working directory:
+
+```python
+import numpy as np
+from utils.text_embedding_store import SentenceEmbeddingStore
+
+root = "data/embeddings/text/all-MiniLM-L6-v2/smoke"
+with SentenceEmbeddingStore(root) as store:
+    query_ids = np.array([12, 87, 0], dtype=np.int64)
+    query_vectors = store.get(query_ids)  # [3, 384], FP16 by default
+
+    option_ids = np.array([[10, 12, 18], [4, 0, 9]], dtype=np.int64)
+    option_vectors = store.get(option_ids)  # [2, 3, 384]
+```
+
+For efficient training at scale, batch lookups by shard or add a worker-local cache around the store. Do not read the full sentence dictionary into a Python dictionary at training time.
+
+## Scale and storage notes
+
+- `smoke`: 1,000 QA rows by default
+- `1m`: 1,000,000 QA rows
+- `2m`: 2,000,000 QA rows
+- `100m`: 100,000,000 QA rows
+- `full`: all rows
+
+These are QA-row caps, not unique-sentence counts. Embedding cost depends on the number of unique normalized strings. FP16 payload for a 384-dimensional embedding is 768 bytes per unique sentence before filesystem overhead: about 732 MiB per million unique sentences. The `.npy` shards are uncompressed to retain memory mapping and fast random access.
+
+## Verification status
+
+The scripts are syntax-checked and their path configuration is set up for the `sage/` root. A full Parquet integration run must be performed in your Sage environment with the project's real Parquet files and installed dependencies. Start with `smoke` before launching a million-row or larger run.
+
+
+
+## update above docs needs to be refactored
+
+Sage scale-preserving sentence ID builder patch
+
+Install:
+  Copy scripts/build_sentence_ids.py into your existing sage/scripts/ directory,
+  replacing the old file after backing it up.
+
+This file imports shared helpers from:
+  sage/utils/text_pipeline_common.py
+
+It expects paths.input_root in your YAML to point to the parent directory:
+  UniProp/data/generated
+
+Then --scale 10k reads only:
+  UniProp/data/generated/10k/
+
+and writes to:
+  UniProp/data/analysis/10k/compact/<same relative paths>
+
+No split quotas or row caps are applied. Every row in each Parquet file of the
+selected scale is processed, and the source-relative train/val/test path is
+preserved. The dictionary is shared across those splits within the selected scale.
+
+Before rebuilding a scale whose analysis output was produced by the earlier buggy
+scale-mixing logic, back up any needed artifacts and use --overwrite. This deletes
+only the selected analysis output directory (e.g. UniProp/data/analysis/10k), not
+the source data under UniProp/data/generated.
+
+Run from the sage repository root:
+  python -m scripts.build_sentence_ids --config configs/embeddings/text_pipeline.yaml --scale 10k --overwrite
+
+Dependency:
+  python -m pip install pyarrow
+

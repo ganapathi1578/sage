@@ -160,3 +160,40 @@ Approximate uncompressed feature bytes:
 `duration_seconds * sample_fps * tokens_per_frame * feature_dim * bytes_per_value`
 
 At 8 FPS, 16 stored tokens/frame, feature dimension 3072 and FP16, one frame is 96 KiB and a 30-second clip is about 22.5 MiB before compression. If you retain 64 tokens/frame instead, that is about four times larger. Use a lower spatial pool grid or smaller `image_size` when storage is constrained; use `spatial_pool_grid_size: 0` only when you want to preserve all native spatial tokens.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
