@@ -1,0 +1,7 @@
+
+# Independent UniProp repository
+/UniProp/
+
+# Generated data and runtime logs
+/data/
+/logs/
