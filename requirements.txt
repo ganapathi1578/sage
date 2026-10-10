@@ -9,3 +9,4 @@ numcodecs>=0.12,<0.16
 huggingface_hub>=0.27
 sentence-transformers>=5.0.0
 pyarrow>=18.0.0
+pytest>=8.0

@@ -1,0 +1,12 @@
+extends:
+  - ../base.yaml
+  - ../models/llama_bidir.yaml
+experiment:
+  name: llama_bidir_10k_seed42
+data:
+  scale: 10k
+training:
+  batch_size: 2
+  epochs: 3
+  learning_rate: 0.0003
+  gradient_accumulation_steps: 1

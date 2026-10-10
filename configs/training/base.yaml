@@ -1,0 +1,52 @@
+# Common defaults. Experiment files extend this and a model-specific config.
+seed: 42
+output_root: outputs/experiments
+experiment:
+  name: unnamed_experiment
+
+data:
+  scale: 10k
+  analysis_root: UniProp/data/analysis
+  compact_dir: compact
+  text_token_store_root: data/embeddings/text/all-MiniLM-L6-v2-tokens
+  video_store: data/embeddings/charades_v1_480/fastvithd_256_1fps.zarr
+  columns:
+    video_id: video_id
+    query_id: query_sentence_id
+    option_ids: option_sentence_ids
+  target:
+    column: labels
+    format: auto             # auto scalar-index or one-positive label vector; choose explicitly after inspecting schema
+    index_base: 0            # used when format resolves to a scalar option index
+    positive_value: 1
+  metadata_columns: [task_type, reasoning_family, generator_family, truth_state]
+  parquet_read_batch_rows: 2048
+  max_video_frames: 32
+  target_fps: 1.0             # Cached feature extraction must be >= this FPS
+  video_sampling: random_contiguous  # random_contiguous | random_uniform | uniform
+  spatial_pooling: none              # none | mean | max; an explicit spatial-token ablation
+  max_query_tokens: null      # null uses complete stored sequence; otherwise truncates at training input only
+  max_option_tokens: null
+
+training:
+  device: auto
+  epochs: 5
+  batch_size: 2
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false
+  drop_last: false
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  scheduler: cosine
+  warmup_steps: 0
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  amp: fp16                  # none | fp16 | bf16; only enabled on CUDA
+  max_steps_per_epoch: null  # set 5-20 for a quick trainer smoke test
+  resume_checkpoint: null
+
+logging:
+  print_every_steps: 20
+  predictions_on_eval: false

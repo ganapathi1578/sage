@@ -1,0 +1,5 @@
+extends: channel_vector_10k.yaml
+experiment:
+  name: channel_vector_linear_attention_10k_seed42
+model:
+  attention: invariant_linear

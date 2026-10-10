@@ -1,0 +1,16 @@
+model:
+  name: channel_vector
+  video_dim: 3072
+  text_dim: 384
+  channels: 384
+  vector_dim: 8
+  num_layers: 6
+  num_heads: 8
+  ffn_channels: 512
+  dropout: 0.05
+  rope_base: 10000.0
+  option_chunk_size: 1
+  attention: vector_multihead  # vector_multihead | invariant_linear
+  gradient_checkpointing: true
+  use_xy_encoding: true
+  use_temporal_rope: true

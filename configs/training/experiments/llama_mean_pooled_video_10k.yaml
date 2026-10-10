@@ -1,0 +1,5 @@
+extends: llama_10k.yaml
+experiment:
+  name: llama_bidir_mean_spatial_pool_10k_seed42
+data:
+  spatial_pooling: mean

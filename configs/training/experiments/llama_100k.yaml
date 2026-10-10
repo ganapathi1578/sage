@@ -1,0 +1,11 @@
+extends:
+  - ../base.yaml
+  - ../models/llama_bidir.yaml
+experiment:
+  name: llama_bidir_100k_seed42
+data:
+  scale: 100k
+training:
+  batch_size: 2
+  epochs: 5
+  learning_rate: 0.0003

@@ -1,0 +1,5 @@
+extends: llama_10k.yaml
+experiment:
+  name: llama_bidir_no_xy_encoding_10k_seed42
+model:
+  use_xy_encoding: false

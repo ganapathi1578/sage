@@ -1,0 +1,15 @@
+model:
+  name: llama_bidir
+  video_dim: 3072
+  text_dim: 384
+  d_model: 384
+  num_layers: 6
+  num_heads: 8
+  ffn_hidden: 1152
+  dropout: 0.1
+  rope_base: 10000.0
+  xy_frequencies: 8
+  option_chunk_size: 2
+  gradient_checkpointing: false
+  use_xy_encoding: true
+  use_temporal_rope: true

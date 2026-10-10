@@ -1,0 +1,5 @@
+extends: llama_10k.yaml
+experiment:
+  name: llama_bidir_0p5fps_10k_seed42
+data:
+  target_fps: 0.5

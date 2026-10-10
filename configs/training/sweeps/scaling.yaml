@@ -1,0 +1,14 @@
+base_config: ../experiments/llama_10k.yaml
+runs:
+  - name: scale_10k
+    overrides:
+      data.scale: 10k
+      experiment.name: llama_bidir_10k_seed42
+  - name: scale_100k
+    overrides:
+      data.scale: 100k
+      experiment.name: llama_bidir_100k_seed42
+  - name: scale_1m
+    overrides:
+      data.scale: 1m
+      experiment.name: llama_bidir_1m_seed42

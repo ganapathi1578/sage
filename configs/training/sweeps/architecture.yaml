@@ -1,0 +1,31 @@
+# `scripts/run_sweep.py` launches every listed run serially.
+base_config: ../experiments/llama_10k.yaml
+runs:
+  - name: llama_2layers
+    overrides:
+      model.num_layers: 2
+      experiment.name: llama_bidir_2layers_10k_seed42
+  - name: llama_4layers
+    overrides:
+      model.num_layers: 4
+      experiment.name: llama_bidir_4layers_10k_seed42
+  - name: llama_6layers
+    overrides:
+      model.num_layers: 6
+      experiment.name: llama_bidir_6layers_10k_seed42
+  - name: llama_4heads
+    overrides:
+      model.num_heads: 4
+      experiment.name: llama_bidir_4heads_10k_seed42
+  - name: llama_no_rope
+    overrides:
+      model.use_temporal_rope: false
+      experiment.name: llama_bidir_no_temporal_rope_10k_seed42
+  - name: llama_no_xy
+    overrides:
+      model.use_xy_encoding: false
+      experiment.name: llama_bidir_no_xy_encoding_10k_seed42
+  - name: llama_mean_spatial_pool
+    overrides:
+      data.spatial_pooling: mean
+      experiment.name: llama_bidir_mean_spatial_pool_10k_seed42

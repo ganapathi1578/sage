@@ -6,3 +6,8 @@
 /data/
 /logs/
 **/__pycache__/
+
+outputs/experiments/
+*.pt
+*.pth
+*.ckpt
