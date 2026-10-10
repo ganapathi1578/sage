@@ -8,7 +8,7 @@ data:
   scale: 10k
   analysis_root: UniProp/data/analysis
   compact_dir: compact
-  text_token_store_root: data/embeddings/text/all-MiniLM-L6-v2-tokens
+  text_token_store_root: data/embeddings/text/all-MiniLM-L6-v2
   video_store: data/embeddings/charades_v1_480/fastvithd_256_1fps.zarr
   columns:
     video_id: video_id
