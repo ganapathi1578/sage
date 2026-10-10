@@ -19,6 +19,12 @@ data:
     format: auto             # scalar option index or per-option labels; vectors may have multiple positives
     index_base: 0            # used when format resolves to a scalar option index
     positive_value: 1
+    task_type_column: task_type
+    multi_label_task_types: [multi_label]
+    # An all-zero multi_label target is valid only for an explicitly false truth state.
+    require_false_truth_state_for_empty: true
+    truth_state_column: truth_state
+    false_truth_values: ["false", "0", "no", "negative"]
   metadata_columns: [task_type, reasoning_family, generator_family, truth_state]
   parquet_read_batch_rows: 2048
   max_video_frames: 32

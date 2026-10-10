@@ -8,7 +8,7 @@ from typing import Any, Iterator
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
-from .targets import resolve_target
+from .targets import resolve_target, target_mode_for_record
 
 try:
     import pyarrow.parquet as pq
@@ -62,6 +62,7 @@ class QAParquetStream(IterableDataset):
         options = row[options_col]
         if not isinstance(options, (list, tuple)) or not options:
             raise ValueError(f"{options_col} must be a non-empty list; got {options!r}")
+        target_mode = target_mode_for_record(row, self.target_cfg)
         target_labels = resolve_target(row[target_col], list(options), self.target_cfg, row)
         if len(target_labels) != len(options):
             raise ValueError(f"Target label count {len(target_labels)} differs from {len(options)} options")
@@ -72,6 +73,7 @@ class QAParquetStream(IterableDataset):
             "query_sentence_id": 0 if row[query_col] is None else int(row[query_col]),
             "option_sentence_ids": [0 if item is None else int(item) for item in options],
             "target_labels": target_labels,
+            "target_mode": target_mode,
             "metadata": metadata,
             "split": self.split,
         }

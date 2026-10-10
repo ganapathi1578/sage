@@ -1,30 +1,74 @@
-# Mixed single-answer and multi-answer targets
+# Mixed single-choice and multi-label supervision
 
-The generated QA corpus intentionally includes both single-correct and multi-correct questions. Prompts such as “Select all objects present at this location” can have several positive options. The training framework must not force these rows into one target index.
+SageQA determines target semantics from each row's `task_type`, not merely from
+how many positive labels happen to be present.
 
-## Batch contract
+- `task_type: multi_label`: use masked binary cross-entropy for the complete
+  multi-hot target vector. This applies if the row has zero, one, or several
+  positive options.
+- Other task types: use masked cross-entropy and require exactly one positive
+  option.
+- By default, an all-zero `multi_label` vector is accepted only when the row's
+  `truth_state` explicitly represents false (`FALSE`, `false`, `0`, `no`, or
+  `negative`). This protects against accidental empty labels on ordinary or
+  unknown examples.
+- Padded candidates are excluded from both objectives and all answer metrics.
 
-- `logits`: floating tensor `[B, K]`, one score per candidate.
-- `target_labels`: float multi-hot tensor `[B, K]`; valid options contain 0/1, and every example has at least one positive.
-- `option_mask`: boolean tensor `[B, K]`; padded candidates are false.
-- `target_counts`: number of correct options in each row.
+The shared data contract supplies `target_labels`, `target_modes`, and the
+boolean batch tensor `is_multi_label_task`. Both architectures return one logit
+per option, so the architecture itself does not need to change.
 
-The order of the candidate options and the labels is kept intact. The models remain option-order equivariant: permuting candidate options permutes their scores in the same way.
+## Relevant configuration
 
-## Loss
+In `configs/training/base.yaml`:
 
-`training.target_loss: mixed_ce_bce` is the default. Rows with exactly one correct option use cross-entropy after invalid candidates are masked out. Rows with multiple correct options use binary cross-entropy with logits, averaged over the row's valid options. The batch loss is the mean of these per-example losses. `training.target_loss: bce` is available as an ablation using BCE for all rows.
+```yaml
+data:
+  target:
+    column: labels
+    format: auto
+    positive_value: 1
+    task_type_column: task_type
+    multi_label_task_types: [multi_label]
+    require_false_truth_state_for_empty: true
+    truth_state_column: truth_state
+    false_truth_values: ["false", "0", "no", "negative"]
 
-## Metrics and checkpoint selection
+training:
+  target_loss: mixed_ce_bce
+  multi_label_threshold: 0.5
+```
 
-- `top1_any_correct`: whether the highest-scored valid option is any correct option, averaged over all examples.
-- `single_choice_accuracy`: top-1 accuracy only for rows with exactly one positive.
-- `multi_label_precision`, `multi_label_recall`, `multi_label_f1`: computed on multi-answer rows by applying the configured sigmoid threshold to each valid option.
-- `multi_label_exact_match`: fraction of multi-answer rows whose thresholded predicted option set exactly equals the positive target set.
-- `selection_score`: mean of single-choice accuracy and multi-answer F1 when both subsets exist; if only one subset exists, uses its corresponding metric.
+`mixed_ce_bce` uses cross-entropy only for single-choice rows and BCE for every
+multi-label row, including zero-positive and one-positive rows. `bce` is an
+optional ablation that uses BCE for every row. Use a fresh run name when
+changing the objective; do not resume a checkpoint created under incompatible
+loss semantics.
 
-Tune `training.multi_label_threshold` on validation data only. The test split must not be used for threshold tuning or checkpoint selection. Thresholded F1 depends on calibration, so report top-1-any-correct and the multi-label metrics together rather than interpreting one number in isolation.
+## Metrics
+
+- Single-choice accuracy is computed on rows whose task type is single-choice.
+- Multi-label precision/recall/F1 and exact-set match are computed on all
+  `multi_label` rows, including empty targets.
+- An empty predicted set exactly matches a zero-positive target.
+- `multi_label_selection_score` averages multi-label micro-F1 and exact-set
+  match. Including exact-set match allows correctly predicted empty answer sets
+  to contribute positively even though an all-negative target has no positive
+  class for F1.
+- `selection_score` averages single-choice accuracy and the multi-label
+  selection score when both task families are present; otherwise it uses the
+  available category score.
 
 ## Validation
 
-The data adapter rejects mismatches between option count and label-vector length, non-binary labels, and examples with no correct options. Padded candidates must have zero targets and are excluded by `option_mask` from loss and metric calculations.
+```bash
+python -m pytest -q
+python -m scripts.validate_training_data \
+  --config configs/training/experiments/llama_10k.yaml \
+  --scale 10k --split val --batches 4
+python -m scripts.train \
+  --config configs/training/experiments/llama_10k.yaml \
+  --set training.max_steps_per_epoch=10 \
+  --set training.epochs=1 \
+  --run-name llama_bidir_mixed_targets_smoke_10k_v2
+```

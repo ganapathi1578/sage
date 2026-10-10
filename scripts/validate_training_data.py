@@ -33,8 +33,11 @@ def main() -> int:
                 torch.nonzero(row > 0.5, as_tuple=False).flatten().tolist()
                 for row in batch["target_labels"]
             ])
-            print("  target types:", [
-                "single" if int(n) == 1 else "multi" for n in batch["target_counts"]
+            print("  positive-label counts:", batch["target_counts"].tolist())
+            print("  target modes:", batch["target_modes"])
+            print("  empty multi-label targets:", [
+                mode == "multi_label" and int(count) == 0
+                for mode, count in zip(batch["target_modes"], batch["target_counts"])
             ])
             n += 1
             if n >= max(1, args.batches):

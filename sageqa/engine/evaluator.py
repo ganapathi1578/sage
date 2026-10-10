@@ -33,8 +33,12 @@ def evaluate(
             logits = model(batch).float()
             targets = batch["target_labels"]
             option_mask = batch["option_mask"]
-            loss = option_supervision_loss(logits, targets, option_mask, loss_cfg or {})
-            acc.update(logits, targets, option_mask, loss, batch.get("metadata"))
+            loss = option_supervision_loss(
+                logits, targets, option_mask, loss_cfg or {}, batch.get("is_multi_label_task")
+            )
+            acc.update(
+                logits, targets, option_mask, loss, batch.get("metadata"), batch.get("is_multi_label_task")
+            )
             if writer:
                 valid = option_mask.bool()
                 masked_logits = logits.masked_fill(~valid, torch.finfo(logits.dtype).min)
@@ -51,12 +55,16 @@ def evaluate(
                         "video_id": batch["video_ids"][i],
                         "query_sentence_id": batch["query_sentence_ids"][i],
                         "option_sentence_ids": batch["option_sentence_ids"][i][:valid_counts[i]],
-                        "target_type": "single" if len(target_indices) == 1 else "multi",
+                        "target_type": batch.get("target_modes", ["single_choice"] * len(preds))[i],
                         "target_indices": target_indices,
                         "prediction_top1": pred,
                         "top1_is_correct": pred in target_indices,
                         "predicted_positive_indices_at_threshold": predicted_indices,
-                        "exact_set_match": (predicted_indices == target_indices) if len(target_indices) > 1 else None,
+                        "exact_set_match": (
+                            predicted_indices == target_indices
+                            if batch.get("target_modes", ["single_choice"] * len(preds))[i] == "multi_label"
+                            else None
+                        ),
                         "scores": scores[i][:valid_counts[i]],
                         "metadata": batch["metadata"][i],
                     }, ensure_ascii=False, default=str) + "\n")

@@ -152,7 +152,9 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                 logits = model(batch).float()
                 targets = batch["target_labels"]
                 option_mask = batch["option_mask"]
-                loss = option_supervision_loss(logits, targets, option_mask, tcfg)
+                loss = option_supervision_loss(
+                    logits, targets, option_mask, tcfg, batch.get("is_multi_label_task")
+                )
                 scaled_loss = loss / accum
             if scaler.is_enabled():
                 scaler.scale(scaled_loss).backward()
@@ -173,7 +175,8 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                     scheduler.step()
                 global_step += 1
             train_metrics.update(
-                logits.detach(), targets.detach(), option_mask.detach(), loss.detach(), batch.get("metadata")
+                logits.detach(), targets.detach(), option_mask.detach(), loss.detach(),
+                batch.get("metadata"), batch.get("is_multi_label_task")
             )
             seen_batches += 1
             if print_every and (batch_idx + 1) % print_every == 0:

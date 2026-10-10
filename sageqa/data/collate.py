@@ -141,11 +141,22 @@ class FeatureCollator:
                 )
             if not np.isin(labels, [0.0, 1.0]).all():
                 raise ValueError("target_labels must be multi-hot values containing only 0/1")
-            if labels.sum() < 1:
-                raise ValueError("Every example must contain at least one correct option")
+            mode = str(row.get("target_mode", "single_choice"))
+            positives = int(labels.sum())
+            if mode == "single_choice":
+                if positives != 1:
+                    raise ValueError(
+                        f"Single-choice example must have exactly one positive option; got {positives}"
+                    )
+            elif mode != "multi_label":
+                raise ValueError(f"Unknown target_mode={mode!r}")
+            # Multi-label rows may have zero, one, or several positives; the
+            # dataset target resolver validates that empty targets mean FALSE.
             target_labels[i, :n_options] = labels
         target_tensor = torch.from_numpy(target_labels)
         target_counts = target_tensor.sum(dim=1).to(torch.long)
+        target_modes = [str(row.get("target_mode", "single_choice")) for row in rows]
+        is_multi_label_task = torch.tensor([mode == "multi_label" for mode in target_modes], dtype=torch.bool)
         return {
             "video_features": torch.from_numpy(video),
             "video_xy": torch.from_numpy(video_xy),
@@ -159,6 +170,8 @@ class FeatureCollator:
             "option_mask": torch.from_numpy(option_mask),
             "target_labels": target_tensor,
             "target_counts": target_counts,
+            "target_modes": target_modes,
+            "is_multi_label_task": is_multi_label_task,
             "video_ids": [row["video_id"] for row in rows],
             "query_sentence_ids": [int(row["query_sentence_id"]) for row in rows],
             "option_sentence_ids": option_ids.tolist(),
