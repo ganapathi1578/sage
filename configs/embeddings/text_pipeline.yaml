@@ -49,13 +49,14 @@ analysis:
 embedding:
   model_name: sentence-transformers/all-MiniLM-L6-v2
   model_slug: all-MiniLM-L6-v2    # used in the output directory name
+  token_model_slug: all-MiniLM-L6-v2
   revision: main
   device: auto                    # auto | cpu | cuda | cuda:0, etc.
   batch_size: 256
   max_seq_length: null            # null uses the model's configured limit
   normalize_embeddings: false
   storage_dtype: float16          # float16 | float32
-  rows_per_chunk: 50000           # contiguous sentence IDs per .npy shard
+  token_rows_per_chunk: 5000      # sentence count per ragged on-disk shard# contiguous sentence IDs per .npy shard
   shared_dir_name: shared
   show_progress_bar: True
   resume: true
