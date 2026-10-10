@@ -80,3 +80,8 @@ python -m scripts.train --config configs/training/experiments/llama_10k.yaml --s
 python -m scripts.train --config configs/training/experiments/llama_10k.yaml --set model.use_temporal_rope=false --set experiment.name=llama_no_rope_seed42
 python -m scripts.train --config configs/training/experiments/channel_vector_10k.yaml --set model.attention=invariant_linear --set experiment.name=channel_linear_attention_seed42
 ```
+
+
+## Mixed single/multi-answer supervision
+
+The scorer returns one logit per candidate option. Labels are represented as a multi-hot target vector, so the same model contract can train on both single-correct and multi-correct questions. See `docs/mixed_answer_training.md` for the target, loss, masking, and metric contract.

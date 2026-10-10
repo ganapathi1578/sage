@@ -15,7 +15,9 @@ def synthetic_batch(text_dim=32, video_dim=24, batch_size=2, t=3, p=4, k=3):
         "option_tokens": torch.randn(batch_size, k, 6, text_dim),
         "option_token_mask": torch.ones(batch_size, k, 6, dtype=torch.bool),
         "option_mask": torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.bool),
-        "target_index": torch.tensor([1, 0]),
+        # First example is single-answer; second is multi-answer.
+        "target_labels": torch.tensor([[0, 1, 0], [1, 1, 0]], dtype=torch.float32),
+        "target_counts": torch.tensor([1, 2]),
         "video_ids": ["v0", "v1"],
         "query_sentence_ids": [1, 2],
         "option_sentence_ids": [[3, 4, 5], [6, 7, 0]],
@@ -86,7 +88,8 @@ def test_channel_vector_invariant_linear_attention_backward():
     model = build_model(cfg).train()
     batch = synthetic_batch()
     scores = model(batch)
-    loss = torch.nn.functional.cross_entropy(scores, batch["target_index"])
+    from sageqa.engine.losses import option_supervision_loss
+    loss = option_supervision_loss(scores, batch["target_labels"], batch["option_mask"], {"target_loss": "mixed_ce_bce"})
     loss.backward()
     assert scores.shape == (2, 3)
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())

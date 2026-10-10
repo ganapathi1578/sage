@@ -16,7 +16,7 @@ data:
     option_ids: option_sentence_ids
   target:
     column: labels
-    format: auto             # auto scalar-index or one-positive label vector; choose explicitly after inspecting schema
+    format: auto             # scalar option index or per-option labels; vectors may have multiple positives
     index_base: 0            # used when format resolves to a scalar option index
     positive_value: 1
   metadata_columns: [task_type, reasoning_family, generator_family, truth_state]
@@ -44,6 +44,8 @@ training:
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   amp: fp16                  # none | fp16 | bf16; only enabled on CUDA
+  target_loss: mixed_ce_bce  # mixed_ce_bce: CE for single-positive rows, masked BCE for multi-positive rows; bce: BCE for all rows
+  multi_label_threshold: 0.5 # threshold used for multi-answer precision/recall/F1 and set-match metrics
   max_steps_per_epoch: null  # set 5-20 for a quick trainer smoke test
   resume_checkpoint: null
 

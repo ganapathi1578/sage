@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sageqa.config import load_config
 from sageqa.data.build_loaders import build_loader
+import torch
 
 
 def main() -> int:
@@ -28,7 +29,13 @@ def main() -> int:
             print("  batch shapes:", {k: tuple(v.shape) for k, v in batch.items() if hasattr(v, "shape")})
             print("  sample video IDs:", batch["video_ids"][:3])
             print("  option counts:", batch["option_mask"].sum(dim=1).tolist())
-            print("  target indices:", batch["target_index"].tolist())
+            print("  positive-option indices:", [
+                torch.nonzero(row > 0.5, as_tuple=False).flatten().tolist()
+                for row in batch["target_labels"]
+            ])
+            print("  target types:", [
+                "single" if int(n) == 1 else "multi" for n in batch["target_counts"]
+            ])
             n += 1
             if n >= max(1, args.batches):
                 break

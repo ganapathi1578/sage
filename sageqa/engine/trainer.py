@@ -10,11 +10,11 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .checkpoint import save_checkpoint, write_run_metadata
 from .evaluator import evaluate, move_batch
 from .metrics import MetricAccumulator
+from .losses import option_supervision_loss
 
 
 def seed_everything(seed: int):
@@ -99,6 +99,17 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                     f"Cannot resume: checkpoint {contract_key} configuration differs from current config. "
                     "Use a new experiment name for a new architecture/scale/cache contract."
                 )
+        old_training = previous_cfg.get("training", {})
+        new_training = cfg.get("training", {})
+        for objective_key, legacy_default in (("target_loss", "single_cross_entropy"),
+                                               ("multi_label_threshold", 0.5)):
+            old_value = old_training.get(objective_key, legacy_default)
+            new_value = new_training.get(objective_key, "mixed_ce_bce" if objective_key == "target_loss" else 0.5)
+            if old_value != new_value:
+                raise ValueError(
+                    f"Cannot resume: checkpoint training.{objective_key}={old_value!r} differs from "
+                    f"current value {new_value!r}. Use a new experiment name or restore the old objective."
+                )
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if scheduler is not None and checkpoint.get("scheduler"):
@@ -128,7 +139,8 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
         if hasattr(train_ds, "set_epoch"):
             train_ds.set_epoch(epoch)
         model.train()
-        train_metrics = MetricAccumulator()
+        metric_threshold = float(tcfg.get("multi_label_threshold", 0.5))
+        train_metrics = MetricAccumulator(threshold=metric_threshold)
         t0 = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         seen_batches = 0
@@ -138,8 +150,9 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
             batch = move_batch(batch, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
                 logits = model(batch).float()
-                targets = batch["target_index"]
-                loss = F.cross_entropy(logits, targets)
+                targets = batch["target_labels"]
+                option_mask = batch["option_mask"]
+                loss = option_supervision_loss(logits, targets, option_mask, tcfg)
                 scaled_loss = loss / accum
             if scaler.is_enabled():
                 scaler.scale(scaled_loss).backward()
@@ -159,14 +172,16 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                 if scheduler is not None:
                     scheduler.step()
                 global_step += 1
-            train_metrics.update(logits.detach(), targets.detach(), loss.detach(), batch.get("metadata"))
+            train_metrics.update(
+                logits.detach(), targets.detach(), option_mask.detach(), loss.detach(), batch.get("metadata")
+            )
             seen_batches += 1
             if print_every and (batch_idx + 1) % print_every == 0:
                 running = train_metrics.compute()
                 print(f"  step {batch_idx + 1}/{nominal_batches} | loss={running['loss']:.4f} "
                       f"acc={running['accuracy']:.4f} lr={optimizer.param_groups[0]['lr']:.3g}", flush=True)
         train_result = train_metrics.compute()
-        val_result = evaluate(model, val_loader, device)
+        val_result = evaluate(model, val_loader, device, threshold=metric_threshold, loss_cfg=tcfg)
         elapsed = time.perf_counter() - t0
         record = {
             "epoch": epoch + 1, "global_step": global_step, "seconds": elapsed,
@@ -175,18 +190,22 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
         }
         with metric_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        current_selection_score = float(val_result["selection_score"])
         save_checkpoint(last_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
-                        epoch=epoch, global_step=global_step, best_metric=max(best_metric, val_result["accuracy"]), cfg=cfg, repo_root=repo_root)
-        is_best = val_result["accuracy"] > best_metric
+                        epoch=epoch, global_step=global_step, best_metric=max(best_metric, current_selection_score), cfg=cfg, repo_root=repo_root)
+        is_best = current_selection_score > best_metric
         if is_best:
-            best_metric = float(val_result["accuracy"])
+            best_metric = current_selection_score
             bad_epochs = 0
             save_checkpoint(best_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
                             epoch=epoch, global_step=global_step, best_metric=best_metric, cfg=cfg, repo_root=repo_root)
         else:
             bad_epochs += 1
-        print(f"epoch {epoch + 1}/{epochs} | train_acc={train_result['accuracy']:.4f} train_loss={train_result['loss']:.4f} "
-              f"val_acc={val_result['accuracy']:.4f} val_loss={val_result['loss']:.4f} steps={global_step} time={elapsed:.1f}s")
+        print(f"epoch {epoch + 1}/{epochs} | train_top1_hit={train_result['accuracy']:.4f} "
+              f"train_loss={train_result['loss']:.4f} val_top1_hit={val_result['accuracy']:.4f} "
+              f"val_selection={val_result['selection_score']:.4f} val_loss={val_result['loss']:.4f} "
+              f"single_acc={val_result['single_choice_accuracy']} multi_f1={val_result['multi_label_f1']} "
+              f"steps={global_step} time={elapsed:.1f}s")
         if patience is not None and bad_epochs >= patience:
             print(f"Early stopping after {bad_epochs} validation epochs without improving accuracy.")
             break

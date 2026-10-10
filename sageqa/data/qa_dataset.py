@@ -8,73 +8,12 @@ from typing import Any, Iterator
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
+from .targets import resolve_target
+
 try:
     import pyarrow.parquet as pq
 except ImportError as exc:  # pragma: no cover - exercised in target environment
     raise RuntimeError("pyarrow is required; install requirements-training.txt") from exc
-
-
-def resolve_target(value: Any, option_ids: list[Any], target_cfg: dict[str, Any], record: dict[str, Any]) -> int:
-    """Resolve configured target representation to a zero-based candidate index.
-
-    Supported formats:
-      - index: scalar zero-based index
-      - one_hot / option_labels: one label per option, exactly one positive
-      - auto: scalar index or a one-positive per-option label vector
-      - correct_text: string matching one of the raw options (requires options column)
-    """
-    fmt = str(target_cfg.get("format", "auto")).lower()
-    k = len(option_ids)
-    if fmt == "correct_text":
-        raw_options = record.get(str(target_cfg.get("options_text_column", "options")))
-        if not isinstance(raw_options, (list, tuple)) or not isinstance(value, str):
-            raise ValueError("target.format=correct_text needs a text target and options_text_column list")
-        matches = [i for i, option in enumerate(raw_options) if str(option) == value]
-        if len(matches) != 1:
-            raise ValueError(f"Correct answer text matched {len(matches)} options; expected exactly one")
-        return matches[0]
-
-    if fmt in {"index", "auto"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        raw_index = int(value)
-        if float(value) != raw_index:
-            raise ValueError(f"Target index must be an integer, got {value!r}")
-        idx = raw_index - int(target_cfg.get("index_base", 0))
-        if not 0 <= idx < k:
-            raise ValueError(
-                f"Target index {raw_index} (index_base={target_cfg.get('index_base', 0)}) resolves to {idx}, "
-                f"outside [0, {k}). Inspect labels and configure data.target.index_base/format."
-            )
-        return idx
-
-    if fmt not in {"one_hot", "option_labels", "auto"}:
-        raise ValueError(f"Unsupported target.format={fmt!r}")
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(
-            f"Target column is not a per-option list (format={fmt!r}, type={type(value).__name__}). "
-            "Inspect the original labels column and set data.target.format explicitly."
-        )
-    if len(value) != k:
-        raise ValueError(f"Label list length {len(value)} differs from option count {k}")
-    positive_value = target_cfg.get("positive_value", 1)
-    positive_strings = {"true", "yes", "correct", "positive"}
-    positive: list[int] = []
-    for i, label in enumerate(value):
-        if isinstance(label, bool):
-            is_positive = label
-        elif isinstance(label, (int, float)):
-            is_positive = label == positive_value
-        elif isinstance(label, str):
-            is_positive = label.strip().lower() in positive_strings or label == str(positive_value)
-        else:
-            is_positive = False
-        if is_positive:
-            positive.append(i)
-    if len(positive) != 1:
-        raise ValueError(
-            f"Expected exactly one positive option label, found {positive}. "
-            f"target={value!r}; set data.target.format/positive_value to match your schema."
-        )
-    return positive[0]
 
 
 class QAParquetStream(IterableDataset):
@@ -123,16 +62,16 @@ class QAParquetStream(IterableDataset):
         options = row[options_col]
         if not isinstance(options, (list, tuple)) or not options:
             raise ValueError(f"{options_col} must be a non-empty list; got {options!r}")
-        target_index = resolve_target(row[target_col], list(options), self.target_cfg, row)
-        if target_index >= len(options):
-            raise ValueError(f"Target index {target_index} invalid for {len(options)} options")
+        target_labels = resolve_target(row[target_col], list(options), self.target_cfg, row)
+        if len(target_labels) != len(options):
+            raise ValueError(f"Target label count {len(target_labels)} differs from {len(options)} options")
         meta_cols = list(self.cfg.get("metadata_columns", []))
         metadata = {name: row.get(name) for name in meta_cols if name in row}
         return {
             "video_id": str(video_id),
             "query_sentence_id": 0 if row[query_col] is None else int(row[query_col]),
             "option_sentence_ids": [0 if item is None else int(item) for item in options],
-            "target_index": target_index,
+            "target_labels": target_labels,
             "metadata": metadata,
             "split": self.split,
         }

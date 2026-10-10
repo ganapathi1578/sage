@@ -32,7 +32,11 @@ def main() -> int:
     state = torch.load(Path(args.checkpoint), map_location=device, weights_only=False)
     model.load_state_dict(state["model"])
     loader, _, collator = build_loader(cfg, root, args.split)
-    metrics = evaluate(model, loader, device, output_path=args.predictions)
+    metrics = evaluate(
+        model, loader, device, output_path=args.predictions,
+        threshold=float(cfg["training"].get("multi_label_threshold", 0.5)),
+        loss_cfg=cfg["training"],
+    )
     collator.close()
     print(f"Split={args.split} scale={cfg['data'].get('scale')} checkpoint={args.checkpoint}")
     for key, value in metrics.items():

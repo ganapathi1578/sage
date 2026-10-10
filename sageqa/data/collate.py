@@ -131,9 +131,21 @@ class FeatureCollator:
                     option_token_mask[i, j, :n] = True
                 cursor += 1
 
-        target = torch.tensor([int(row["target_index"]) for row in rows], dtype=torch.long)
-        if torch.any(target < 0) or torch.any(target >= torch.from_numpy(option_mask.sum(axis=1))):
-            raise ValueError("A target_index points to a padded/non-existent option")
+        target_labels = np.zeros((b, max_k), dtype=np.float32)
+        for i, row in enumerate(rows):
+            labels = np.asarray(row["target_labels"], dtype=np.float32)
+            n_options = len(row["option_sentence_ids"])
+            if labels.ndim != 1 or labels.shape[0] != n_options:
+                raise ValueError(
+                    f"Example target_labels has shape {labels.shape}, but {n_options} options exist"
+                )
+            if not np.isin(labels, [0.0, 1.0]).all():
+                raise ValueError("target_labels must be multi-hot values containing only 0/1")
+            if labels.sum() < 1:
+                raise ValueError("Every example must contain at least one correct option")
+            target_labels[i, :n_options] = labels
+        target_tensor = torch.from_numpy(target_labels)
+        target_counts = target_tensor.sum(dim=1).to(torch.long)
         return {
             "video_features": torch.from_numpy(video),
             "video_xy": torch.from_numpy(video_xy),
@@ -145,7 +157,8 @@ class FeatureCollator:
             "option_tokens": torch.from_numpy(option_tokens),
             "option_token_mask": torch.from_numpy(option_token_mask),
             "option_mask": torch.from_numpy(option_mask),
-            "target_index": target,
+            "target_labels": target_tensor,
+            "target_counts": target_counts,
             "video_ids": [row["video_id"] for row in rows],
             "query_sentence_ids": [int(row["query_sentence_id"]) for row in rows],
             "option_sentence_ids": option_ids.tolist(),

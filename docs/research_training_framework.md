@@ -36,3 +36,16 @@ For a quick initial check use `--set training.max_steps_per_epoch=5 --set traini
 ## Candidate order and sequence construction
 
 Each option is scored independently by the same network. The score matrix is `[B,K]`; permuting options permutes scores in the same way. Video, question, and candidate tokens are concatenated with learned markers `video_open`, `video_close`, `query_open`, `query_close`, `option_open`, `option_close`, and a final decision `[MASK]` token. Attention is bidirectional with key padding masks; it is not a causal language-modeling setup.
+
+## Mixed single-answer and multi-answer supervision
+
+UniProp may contain ordinary single-correct-option questions and multi-correct questions (for example, prompts such as “Select all objects…”). The dataset adapter therefore converts every row to a multi-hot `target_labels` vector aligned with the option order. A row must have at least one positive label; more than one positive is valid.
+
+The default `training.target_loss: mixed_ce_bce` selects the loss per example:
+
+- exactly one positive option: cross-entropy over valid options;
+- multiple positive options: binary cross-entropy averaged over that example's valid options.
+
+Padded options are excluded using `option_mask`. Set `training.target_loss: bce` for an all-BCE ablation. The model interface is unchanged: models return one logit per option in `[B, K]`.
+
+Evaluation reports top-1-any-correct, single-choice accuracy, and (for multi-answer examples) thresholded micro precision/recall/F1 and exact-set match. The default `selection_score` is the mean of single-choice accuracy and multi-answer F1 when both types are present, so checkpoint selection does not judge multi-answer examples only by their top-ranked option. Tune `training.multi_label_threshold` using validation data only. For final test evaluation, freeze the threshold chosen on validation.
