@@ -5,11 +5,15 @@ import json
 import math
 import random
 import time
+from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from .checkpoint import save_checkpoint, write_run_metadata
 from .evaluator import evaluate, move_batch
@@ -32,6 +36,7 @@ def _make_scheduler(optimizer, total_steps: int, cfg: dict[str, Any]):
     warmup = int(cfg.get("warmup_steps", 0))
     if total_steps <= 0 or schedule_name == "none":
         return None
+
     def lr_lambda(step: int):
         if warmup > 0 and step < warmup:
             return max(1e-8, (step + 1) / warmup)
@@ -41,20 +46,96 @@ def _make_scheduler(optimizer, total_steps: int, cfg: dict[str, Any]):
         if schedule_name == "cosine":
             return 0.5 * (1.0 + math.cos(math.pi * progress))
         raise ValueError(f"Unknown scheduler={schedule_name!r}")
+
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_collator, val_loader, val_collator, model) -> Path:
+def _is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+
+
+def _sync_metric_accumulator(acc: MetricAccumulator, device: torch.device) -> None:
+    """Aggregate rank-local training metrics so the epoch summary is global."""
+    if not _is_distributed():
+        return
+
+    fields = (
+        "examples", "loss_sum", "top1_hits", "single_examples", "single_correct",
+        "multi_examples", "multi_nonempty_targets", "multi_empty_targets",
+        "multi_top1_hits", "multi_exact_match", "tp", "fp", "fn",
+    )
+    values = torch.tensor(
+        [float(getattr(acc, name)) for name in fields],
+        dtype=torch.float64,
+        device=device,
+    )
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    integer_fields = set(fields) - {"loss_sum"}
+    for name, value in zip(fields, values.cpu().tolist()):
+        setattr(acc, name, int(round(value)) if name in integer_fields else float(value))
+
+    local_groups = {key: dict(value) for key, value in acc.groups.items()}
+    gathered = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, local_groups)
+    merged: dict[str, dict[str, int]] = defaultdict(lambda: {"count": 0, "top1_hits": 0})
+    for rank_groups in gathered:
+        for name, values_by_group in (rank_groups or {}).items():
+            merged[name]["count"] += int(values_by_group.get("count", 0))
+            merged[name]["top1_hits"] += int(values_by_group.get("top1_hits", 0))
+    acc.groups = merged
+
+
+def _rank_zero_eval(model, val_loader, device, threshold, loss_cfg):
+    """Evaluate the complete validation split once, on rank 0, then share metrics."""
+    if not _is_distributed():
+        return evaluate(model, val_loader, device, threshold=threshold, loss_cfg=loss_cfg)
+
+    dist.barrier()
+    payload = [None]
+    if dist.get_rank() == 0:
+        payload[0] = evaluate(model, val_loader, device, threshold=threshold, loss_cfg=loss_cfg)
+    # With NCCL, each process has already selected its local CUDA device.
+    dist.broadcast_object_list(payload, src=0)
+    dist.barrier()
+    return payload[0]
+
+
+def train(
+    cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_collator,
+    val_loader, val_collator, model,
+) -> Path:
+    distributed = _is_distributed()
+    rank = dist.get_rank() if distributed else 0
+    world_size = dist.get_world_size() if distributed else 1
+    local_rank = int(__import__("os").environ.get("LOCAL_RANK", "0"))
+
     seed = int(cfg.get("seed", 42))
-    seed_everything(seed)
+    # Model weights were initialized from the same seed in every process;
+    # rank-specific seeds now decorrelate dropout/other training randomness.
+    seed_everything(seed + rank)
     tcfg = cfg["training"]
+
     device_name = str(tcfg.get("device", "auto"))
-    if device_name == "auto":
-        device_name = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device_name)
+    if distributed:
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        if device_name == "auto":
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device_name)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("training.device requests CUDA but CUDA is unavailable")
-    model.to(device)
+
+    base_model = model.to(device)
+    if distributed:
+        model = DistributedDataParallel(
+            base_model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            broadcast_buffers=False,
+        )
+    else:
+        model = base_model
+
     out_root = Path(cfg.get("output_root", "outputs/experiments"))
     if not out_root.is_absolute():
         out_root = repo_root / out_root
@@ -66,7 +147,10 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
             f"Run output already exists: {run_dir}. Use a new experiment.name for a fresh run, "
             "or set training.resume_checkpoint to last_checkpoint.pt to resume deliberately."
         )
-    write_run_metadata(run_dir, cfg, model.model_summary(), repo_root)
+    if rank == 0:
+        write_run_metadata(run_dir, cfg, base_model.model_summary(), repo_root)
+    if distributed:
+        dist.barrier()
 
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad),
@@ -82,6 +166,7 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
         nominal_batches = min(nominal_batches, int(max_steps_per_epoch))
     total_updates = epochs * max(1, math.ceil(nominal_batches / accum))
     scheduler = _make_scheduler(optimizer, total_updates, tcfg)
+
     amp_mode = str(tcfg.get("amp", "none")).lower()
     amp_enabled = device.type == "cuda" and amp_mode in {"fp16", "bf16"}
     amp_dtype = torch.float16 if amp_mode == "fp16" else torch.bfloat16
@@ -101,8 +186,7 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                 )
         old_training = previous_cfg.get("training", {})
         new_training = cfg.get("training", {})
-        for objective_key, legacy_default in (("target_loss", "single_cross_entropy"),
-                                               ("multi_label_threshold", 0.5)):
+        for objective_key, legacy_default in (("target_loss", "single_cross_entropy"), ("multi_label_threshold", 0.5)):
             old_value = old_training.get(objective_key, legacy_default)
             new_value = new_training.get(objective_key, "mixed_ce_bce" if objective_key == "target_loss" else 0.5)
             if old_value != new_value:
@@ -110,7 +194,7 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                     f"Cannot resume: checkpoint training.{objective_key}={old_value!r} differs from "
                     f"current value {new_value!r}. Use a new experiment name or restore the old objective."
                 )
-        model.load_state_dict(checkpoint["model"])
+        base_model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if scheduler is not None and checkpoint.get("scheduler"):
             scheduler.load_state_dict(checkpoint["scheduler"])
@@ -121,7 +205,7 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
             random.setstate(rng["python"])
             np.random.set_state(rng["numpy"])
             torch.set_rng_state(rng["torch"].cpu())
-            if torch.cuda.is_available() and rng.get("cuda") is not None:
+            if torch.cuda.is_available() and rng.get("cuda") is not None and not distributed:
                 torch.cuda.set_rng_state_all([state.cpu() for state in rng["cuda"]])
         start_epoch = int(checkpoint.get("epoch", -1)) + 1
         global_step = int(checkpoint.get("global_step", 0))
@@ -135,6 +219,7 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
     patience_value = tcfg.get("early_stopping_patience")
     patience = None if patience_value is None else max(1, int(patience_value))
     bad_epochs = 0
+
     for epoch in range(start_epoch, epochs):
         if hasattr(train_ds, "set_epoch"):
             train_ds.set_epoch(epoch)
@@ -143,24 +228,29 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
         train_metrics = MetricAccumulator(threshold=metric_threshold)
         t0 = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
-        seen_batches = 0
+
         for batch_idx, batch in enumerate(train_loader):
             if max_steps_per_epoch is not None and batch_idx >= int(max_steps_per_epoch):
                 break
+            do_step = ((batch_idx + 1) % accum == 0) or ((batch_idx + 1) == nominal_batches)
             batch = move_batch(batch, device)
-            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
-                logits = model(batch).float()
-                targets = batch["target_labels"]
-                option_mask = batch["option_mask"]
-                loss = option_supervision_loss(
-                    logits, targets, option_mask, tcfg, batch.get("is_multi_label_task")
-                )
-                scaled_loss = loss / accum
-            if scaler.is_enabled():
-                scaler.scale(scaled_loss).backward()
-            else:
-                scaled_loss.backward()
-            do_step = ((batch_idx + 1) % accum == 0) or (batch_idx + 1 == nominal_batches)
+            sync_context = model.no_sync() if distributed and not do_step else nullcontext()
+            # DDP requires both forward and backward to be inside no_sync() on
+            # accumulation microbatches that do not trigger an optimizer update.
+            with sync_context:
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+                    logits = model(batch).float()
+                    targets = batch["target_labels"]
+                    option_mask = batch["option_mask"]
+                    loss = option_supervision_loss(
+                        logits, targets, option_mask, tcfg, batch.get("is_multi_label_task")
+                    )
+                    scaled_loss = loss / accum
+                if scaler.is_enabled():
+                    scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
+
             if do_step:
                 if scaler.is_enabled():
                     scaler.unscale_(optimizer)
@@ -174,45 +264,80 @@ def train(cfg: dict[str, Any], repo_root: Path, train_loader, train_ds, train_co
                 if scheduler is not None:
                     scheduler.step()
                 global_step += 1
+
             train_metrics.update(
                 logits.detach(), targets.detach(), option_mask.detach(), loss.detach(),
-                batch.get("metadata"), batch.get("is_multi_label_task")
+                batch.get("metadata"), batch.get("is_multi_label_task"),
             )
-            seen_batches += 1
-            if print_every and (batch_idx + 1) % print_every == 0:
+            if rank == 0 and print_every and (batch_idx + 1) % print_every == 0:
                 running = train_metrics.compute()
-                print(f"  step {batch_idx + 1}/{nominal_batches} | loss={running['loss']:.4f} "
-                      f"acc={running['accuracy']:.4f} lr={optimizer.param_groups[0]['lr']:.3g}", flush=True)
+                print(
+                    f"  step {batch_idx + 1}/{nominal_batches} "
+                    f"(rank0 shard) | loss={running['loss']:.4f} "
+                    f"acc={running['accuracy']:.4f} lr={optimizer.param_groups[0]['lr']:.3g}",
+                    flush=True,
+                )
+
+        _sync_metric_accumulator(train_metrics, device)
         train_result = train_metrics.compute()
-        val_result = evaluate(model, val_loader, device, threshold=metric_threshold, loss_cfg=tcfg)
         elapsed = time.perf_counter() - t0
-        record = {
-            "epoch": epoch + 1, "global_step": global_step, "seconds": elapsed,
-            "train": train_result, "val": val_result,
-            "learning_rate": optimizer.param_groups[0]["lr"],
-        }
-        with metric_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        val_result = _rank_zero_eval(
+            base_model, val_loader, device, metric_threshold, tcfg
+        )
+
         current_selection_score = float(val_result["selection_score"])
-        save_checkpoint(last_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
-                        epoch=epoch, global_step=global_step, best_metric=max(best_metric, current_selection_score), cfg=cfg, repo_root=repo_root)
         is_best = current_selection_score > best_metric
         if is_best:
-            best_metric = current_selection_score
+            next_best_metric = current_selection_score
+        else:
+            next_best_metric = best_metric
+
+        if rank == 0:
+            record = {
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "seconds": elapsed,
+                "train": train_result,
+                "val": val_result,
+                "learning_rate": optimizer.param_groups[0]["lr"],
+            }
+            with metric_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            save_checkpoint(
+                last_path, model=base_model, optimizer=optimizer, scheduler=scheduler,
+                scaler=scaler, epoch=epoch, global_step=global_step,
+                best_metric=next_best_metric, cfg=cfg, repo_root=repo_root,
+            )
+            if is_best:
+                save_checkpoint(
+                    best_path, model=base_model, optimizer=optimizer, scheduler=scheduler,
+                    scaler=scaler, epoch=epoch, global_step=global_step,
+                    best_metric=next_best_metric, cfg=cfg, repo_root=repo_root,
+                )
+            print(
+                f"epoch {epoch + 1}/{epochs} | train_top1_hit={train_result['accuracy']:.4f} "
+                f"train_loss={train_result['loss']:.4f} val_top1_hit={val_result['accuracy']:.4f} "
+                f"val_selection={val_result['selection_score']:.4f} val_loss={val_result['loss']:.4f} "
+                f"single_acc={val_result['single_choice_accuracy']} "
+                f"multi_f1={val_result['multi_label_f1']} steps={global_step} time={elapsed:.1f}s",
+                flush=True,
+            )
+
+        best_metric = next_best_metric
+        if is_best:
             bad_epochs = 0
-            save_checkpoint(best_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
-                            epoch=epoch, global_step=global_step, best_metric=best_metric, cfg=cfg, repo_root=repo_root)
         else:
             bad_epochs += 1
-        print(f"epoch {epoch + 1}/{epochs} | train_top1_hit={train_result['accuracy']:.4f} "
-              f"train_loss={train_result['loss']:.4f} val_top1_hit={val_result['accuracy']:.4f} "
-              f"val_selection={val_result['selection_score']:.4f} val_loss={val_result['loss']:.4f} "
-              f"single_acc={val_result['single_choice_accuracy']} multi_f1={val_result['multi_label_f1']} "
-              f"steps={global_step} time={elapsed:.1f}s")
+        if distributed:
+            # Do not begin a new epoch while rank 0 is still writing checkpoints.
+            dist.barrier()
         if patience is not None and bad_epochs >= patience:
-            print(f"Early stopping after {bad_epochs} validation epochs without improving accuracy.")
+            if rank == 0:
+                print(f"Early stopping after {bad_epochs} validation epochs without improving selection score.")
             break
+
     train_collator.close()
     val_collator.close()
-    print(f"Best checkpoint: {best_path}")
+    if rank == 0:
+        print(f"Best checkpoint: {best_path}")
     return best_path
