@@ -214,6 +214,9 @@ def train(
     metric_path = run_dir / "metrics.jsonl"
     max_grad_norm = float(tcfg.get("max_grad_norm", 1.0))
     print_every = max(0, int(cfg.get("logging", {}).get("print_every_steps", 20)))
+    # Number of training microbatches between full validation passes. Zero disables
+    # interval validation; every epoch still receives its normal full validation.
+    validation_interval_batches = max(0, int(tcfg.get("validation_interval_batches", 0)))
     best_path = run_dir / "best_checkpoint.pt"
     last_path = run_dir / "last_checkpoint.pt"
     patience_value = tcfg.get("early_stopping_patience")
@@ -277,6 +280,49 @@ def train(
                     f"acc={running['accuracy']:.4f} lr={optimizer.param_groups[0]['lr']:.3g}",
                     flush=True,
                 )
+
+            # Interval validation counts training microbatches, not optimizer updates.
+            # Skip the last batch because the regular epoch-end validation below runs
+            # immediately after the training loop and already evaluates this checkpoint.
+            if (
+                validation_interval_batches > 0
+                and (batch_idx + 1) % validation_interval_batches == 0
+                and (batch_idx + 1) < nominal_batches
+            ):
+                interval_eval_start = time.perf_counter()
+                interval_val_result = _rank_zero_eval(
+                    base_model, val_loader, device, metric_threshold, tcfg
+                )
+                interval_eval_seconds = time.perf_counter() - interval_eval_start
+                # evaluate() switches the underlying model to eval mode; restore it
+                # before continuing training. In DDP, every rank reaches this point.
+                model.train()
+                if rank == 0:
+                    interval_record = {
+                        "event": "interval_validation",
+                        "epoch": epoch + 1,
+                        "train_microbatch": batch_idx + 1,
+                        "nominal_microbatches": nominal_batches,
+                        "global_step": global_step,
+                        "validation_examples": interval_val_result.get("examples"),
+                        "validation_seconds": interval_eval_seconds,
+                        "val": interval_val_result,
+                    }
+                    with metric_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(interval_record, ensure_ascii=False) + "\n")
+                    print(
+                        f"interval_validation | epoch={epoch + 1}/{epochs} "
+                        f"microbatches={batch_idx + 1}/{nominal_batches} "
+                        f"global_step={global_step} "
+                        f"val_top1_hit={interval_val_result['accuracy']:.4f} "
+                        f"val_selection={interval_val_result['selection_score']:.4f} "
+                        f"val_loss={interval_val_result['loss']:.4f} "
+                        f"single_acc={interval_val_result['single_choice_accuracy']} "
+                        f"multi_f1={interval_val_result['multi_label_f1']} "
+                        f"val_examples={interval_val_result.get('examples')} "
+                        f"time={interval_eval_seconds:.1f}s",
+                        flush=True,
+                    )
 
         _sync_metric_accumulator(train_metrics, device)
         train_result = train_metrics.compute()
