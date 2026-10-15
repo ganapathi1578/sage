@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Sage Model Playground</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+  <main id="login-view" class="login-shell">
+    <section class="login-brand-panel">
+      <div class="brand-lockup large"><span class="brand-mark"><span></span><span></span><span></span><span></span></span><span>SAGE<span class="brand-muted"> / PLAYGROUND</span></span></div>
+      <div class="login-brand-copy">
+        <div class="eyebrow">RESEARCH WORKSPACE</div>
+        <h1>See what your<br><em>models understand.</em></h1>
+        <p>Explore video questions, swap checkpoints, inspect predictions, and test new ideas without changing the underlying dataset.</p>
+      </div>
+      <div class="login-foot"><span class="pulse-dot"></span> Shared research environment <span class="dot-separator">·</span> LAN access</div>
+    </section>
+    <section class="login-form-panel">
+      <div class="login-card">
+        <div class="eyebrow">WELCOME BACK</div>
+        <h2>Sign in to Sage</h2>
+        <p class="muted">Use the playground credentials provided by your server administrator.</p>
+        <form id="login-form">
+          <label for="login-username">Username</label>
+          <input id="login-username" name="username" autocomplete="username" required placeholder="Research account">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="Enter password">
+          <div id="login-error" class="inline-error" hidden></div>
+          <button class="button primary full-width" type="submit">Sign in <span aria-hidden="true">→</span></button>
+        </form>
+        <div class="security-note"><span class="lock-icon">⌑</span> Authenticated session <span class="dot-separator">·</span> Same-network access</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand-lockup"><span class="brand-mark"><span></span><span></span><span></span><span></span></span><span>SAGE<span class="brand-muted"> / PLAYGROUND</span></span></div>
+      <div class="topbar-center"><span class="status-led"></span><span id="header-status">Connecting to workspace</span></div>
+      <div class="topbar-user"><span class="avatar" id="user-avatar">R</span><span id="user-label">Researcher</span><button id="logout-button" class="button quiet small">Sign out</button></div>
+    </header>
+
+    <div class="page-frame">
+      <aside class="sidebar">
+        <div class="side-heading">WORKSPACE</div>
+        <button class="nav-item active" data-panel="playground"><span class="nav-icon">◫</span> Video playground <span class="nav-arrow">›</span></button>
+        <div class="sidebar-section">
+          <div class="section-label-row"><span>ACTIVE MODEL</span><span id="model-dot" class="small-status-dot"></span></div>
+          <label for="model-run">Experiment</label>
+          <select id="model-run" class="field"></select>
+          <label for="model-checkpoint">Checkpoint</label>
+          <select id="model-checkpoint" class="field">
+            <option value="best_checkpoint.pt">Best checkpoint</option>
+            <option value="last_checkpoint.pt">Last checkpoint</option>
+          </select>
+          <button id="load-model-button" class="button secondary full-width"><span>↻</span> Load model</button>
+          <div id="model-meta" class="model-meta"><div class="empty-mini">Choose an experiment to inspect its checkpoint.</div></div>
+        </div>
+        <div class="sidebar-section dataset-settings">
+          <div class="section-label-row"><span>DATA SOURCE</span><span class="pill neutral">Read only</span></div>
+          <label for="dataset-scale">Dataset scale</label>
+          <select id="dataset-scale" class="field"></select>
+          <label for="dataset-split">Split</label>
+          <select id="dataset-split" class="field">
+            <option value="train">Train</option><option value="val" selected>Validation</option><option value="test">Test</option>
+          </select>
+          <div id="index-status" class="index-status"><span class="status-led"></span><span>Dataset index not started</span></div>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="privacy-symbol">⌁</div>
+          <div><strong>Temporary playground</strong><p>Edited questions and uploaded videos are not added to your dataset.</p></div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <section class="welcome-row">
+          <div><div class="eyebrow">MODEL EVALUATION / INTERACTIVE</div><h1>Video playground<span class="title-period">.</span></h1><p>Pick a clip, ask a question, and inspect how a checkpoint scores each answer.</p></div>
+          <div class="runtime-chip"><span class="runtime-icon">⌘</span><div><span class="runtime-label">INFERENCE DEVICE</span><strong id="device-label">Detecting device…</strong></div></div>
+        </section>
+
+        <div id="setup-warning" class="notice warning" hidden></div>
+
+        <section class="content-grid">
+          <section class="card video-card">
+            <div class="card-header"><div><div class="eyebrow">01 / VIDEO SOURCE</div><h2>Choose a clip</h2></div><div class="source-tabs"><button id="dataset-source-tab" class="source-tab active">Dataset</button><button id="upload-source-tab" class="source-tab">Upload</button></div></div>
+            <div id="dataset-video-source">
+              <div class="field-grid two">
+                <div><label for="video-search">Find a video</label><input id="video-search" class="field" placeholder="Search video ID…"></div>
+                <div><label for="video-select">Available videos</label><select id="video-select" class="field"><option value="">Index a split to browse videos</option></select></div>
+              </div>
+              <div class="video-count-row"><span id="video-count">No videos loaded</span><button id="more-videos" class="text-button" hidden>Load more ↗</button></div>
+            </div>
+            <div id="upload-video-source" hidden>
+              <div id="upload-drop" class="upload-drop"><div class="upload-symbol">↑</div><strong>Drop a video here or browse files</strong><span>MP4, MOV, AVI, MKV, WebM · up to 500 MB · 10 minutes</span><input id="upload-input" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm,.mp4,.mov,.avi,.mkv,.webm,.m4v"></div>
+              <div id="upload-meta" class="upload-meta" hidden></div>
+            </div>
+            <div class="video-stage" id="video-stage">
+              <div id="video-empty" class="video-empty"><div class="play-outline">▶</div><strong>Select a video to preview</strong><span>Choose a dataset clip or upload your own video.</span></div>
+              <video id="video-player" controls playsinline preload="metadata" hidden></video>
+              <div class="video-overlay-label"><span class="live-dot"></span><span id="video-label">NO CLIP SELECTED</span></div>
+            </div>
+            <div class="video-footer"><div><span class="footer-label">SELECTED VIDEO</span><code id="selected-video-id">—</code></div><div><span class="footer-label">FRAME FEATURES</span><strong id="feature-status">Cached inference</strong></div></div>
+          </section>
+
+          <section class="card browser-card">
+            <div class="card-header"><div><div class="eyebrow">02 / DATASET EXPLORER</div><h2>Find a question</h2><p class="card-subtitle">Browse questions linked to the selected clip.</p></div><span class="pill accent">5–10 suggested</span></div>
+            <div class="filters-grid">
+              <div><label for="task-filter">Question format</label><select id="task-filter" class="field"><option value="all">All formats</option></select></div>
+              <div><label for="reasoning-filter">Reasoning family</label><select id="reasoning-filter" class="field"><option value="all">All families</option></select></div>
+              <div><label for="generator-filter">Generator family</label><select id="generator-filter" class="field"><option value="all">All generators</option></select></div>
+            </div>
+            <div class="question-list-header"><span id="question-count">Questions</span><span>SELECT TO EDIT</span></div>
+            <div id="question-list" class="question-list"><div class="empty-state"><div class="empty-icon">⌕</div><strong>Select a video first</strong><p>We'll show a small set of questions from its dataset examples.</p></div></div>
+            <div class="question-list-footer"><span id="question-page-info">No examples yet</span><button id="more-questions" class="button quiet small" hidden>More questions</button></div>
+          </section>
+        </section>
+
+        <section class="card workbench-card">
+          <div class="card-header workbench-head"><div><div class="eyebrow">03 / INFERENCE WORKBENCH</div><h2>Question & answers</h2><p class="card-subtitle">You can edit any field. Changes apply only to this inference request.</p></div><div class="workbench-actions"><span id="prompt-source" class="pill neutral">Custom prompt</span><button id="reset-question" class="button quiet small">Reset prompt</button></div></div>
+          <div class="workbench-grid">
+            <div class="prompt-column"><label for="question-editor">Question</label><textarea id="question-editor" class="field question-editor" maxlength="2000" placeholder="Type a question about the selected video…"></textarea><div class="editor-bottom"><span id="question-length">0 / 2000</span><span>MiniLM token features</span></div><div class="field-grid two target-fields"><div><label for="answer-mode">Answer mode</label><select id="answer-mode" class="field"><option value="single_choice">Choose one answer</option><option value="multi_label">Select all that apply</option></select></div><div><label id="expected-answer-label" for="expected-answer">Expected answer (optional)</label><select id="expected-answer" class="field"><option value="">Not specified</option></select></div></div></div>
+            <div class="options-column"><div class="options-heading"><label for="options-editor">Answer options</label><button id="restore-options" class="text-button">Restore original</button></div><textarea id="options-editor" class="field options-editor" spellcheck="false" placeholder="One answer option per line"></textarea><div class="editor-bottom"><span id="options-count">0 options</span><span>2–16 options</span></div><div id="validation-message" class="inline-error" hidden></div><button id="run-inference" class="button primary run-button"><span class="run-play">▶</span> Run inference <span class="run-arrow">→</span></button></div>
+          </div>
+        </section>
+
+        <section id="results-card" class="card results-card" hidden>
+          <div class="card-header"><div><div class="eyebrow">04 / PREDICTION INSPECTION</div><h2>Model response</h2><p id="result-subtitle" class="card-subtitle">Scores for each candidate answer.</p></div><span id="result-correctness" class="result-status neutral">Completed</span></div>
+          <div class="result-summary"><div class="prediction-orb">✳</div><div><div class="eyebrow">TOP-RANKED ANSWER</div><h3 id="predicted-answer">—</h3><p id="prediction-context">Relative scores are not calibrated confidence estimates.</p></div><div class="result-meta"><div><span>MODEL</span><strong id="result-model">—</strong></div><div><span>CHECKPOINT</span><strong id="result-checkpoint">—</strong></div></div></div>
+          <div class="scores-heading"><span>OPTION SCORE BREAKDOWN</span><span id="score-label">RELATIVE PROBABILITY</span></div>
+          <div id="score-list" class="score-list"></div>
+          <div id="result-ground-truth" class="ground-truth" hidden></div>
+          <div class="result-footnote">For single-choice questions, relative probability is a softmax over the presented options. Multi-label selection uses the checkpoint's sigmoid threshold. These scores are model outputs, not calibrated real-world probabilities.</div>
+        </section>
+
+        <footer class="page-footer"><span>SAGE MODEL PLAYGROUND</span><span>Research tooling <span class="dot-separator">·</span> Changes are not saved to source datasets</span></footer>
+      </main>
+    </div>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
