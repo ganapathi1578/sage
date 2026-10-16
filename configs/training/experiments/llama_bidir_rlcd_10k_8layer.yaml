@@ -1,0 +1,19 @@
+# Example hyperparameter layer for a Laya-style RLCD pilot initialized from an
+# 8-layer Sage supervised checkpoint. Prefer the checkpoint's config.resolved.yaml
+# as --config; this file documents the values to override in that resolved config.
+extends: llama_10k.yaml
+experiment:
+  name: llama_bidir_rlcd_10k_8layer_pilot
+model:
+  num_layers: 8
+training:
+  epochs: 3
+  learning_rate: 0.00002
+  gradient_accumulation_steps: 128
+  early_stopping_patience: 2
+  rlcd:
+    group_size: 4
+    sigma_start: 0.4
+    sigma_end: 0.1
+    w_sph: 0.75
+    supervised_weight: 1.0
