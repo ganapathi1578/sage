@@ -240,6 +240,11 @@ def main() -> int:
         last_path = run_dir / "last_checkpoint.pt"
         global_step = 0
         stop_training = False
+        skipped_updates = 0
+        consecutive_bad_updates = 0
+        max_consecutive_bad_updates = max(
+            1, int(tcfg.get("max_consecutive_nonfinite_updates", 3))
+        )
 
         print(f"Repo root: {repo_root}")
         print(f"RLCD run: {args.run_name} | init={init_path}")
@@ -267,6 +272,12 @@ def main() -> int:
                 batch = move_batch(batch, device)
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
                     logits = model(batch)
+                processed = batch_idx + 1
+                if not torch.isfinite(logits).all():
+                    raise FloatingPointError(
+                        f"Non-finite model logits at microbatch {processed}; "
+                        "check the batch/features and FP16 forward pass"
+                    )
                 loss, parts = laya_style_rlcd_loss(
                     logits.float(), batch["target_labels"], batch["option_mask"],
                     batch["is_multi_label_task"], sigma=epoch_sigma, samples=group_size,
@@ -274,8 +285,13 @@ def main() -> int:
                     supervised_weight=float(rcfg["supervised_weight"]),
                     supervised_cfg=tcfg,
                 )
+                if not torch.isfinite(loss.detach()):
+                    raise FloatingPointError(
+                        f"Non-finite RLCD objective at microbatch {processed}; "
+                        f"pg={float(parts['policy_gradient_loss'])}, "
+                        f"supervised={float(parts['supervised_loss'])}"
+                    )
 
-                processed = batch_idx + 1
                 window_start = ((processed - 1) // accum) * accum
                 window_size = min(accum, nominal_batches - window_start)
                 scaled_loss = loss / max(1, window_size)
@@ -292,16 +308,45 @@ def main() -> int:
                         model.parameters(), float(tcfg.get("max_grad_norm", 1.0))
                     )
                     if not torch.isfinite(grad_norm):
-                        raise FloatingPointError(f"Non-finite gradient norm at optimizer step {global_step + 1}")
-                    if scaler.is_enabled():
-                        scaler.step(optimizer)
-                        scaler.update()
+                        # Do not pass non-finite gradients into AdamW. With FP16 AMP,
+                        # lower the GradScaler scale explicitly and skip this update;
+                        # its current behavior would otherwise raise before the scaler
+                        # can recover. We also handle the rare non-AMP case by discarding
+                        # the bad accumulation window, and stop if failures persist.
+                        old_scale = scaler.get_scale() if scaler.is_enabled() else None
+                        optimizer.zero_grad(set_to_none=True)
+                        if scaler.is_enabled():
+                            scaler.update(new_scale=max(float(old_scale) / 2.0, 1.0))
+                            new_scale = scaler.get_scale()
+                        else:
+                            new_scale = None
+                        skipped_updates += 1
+                        consecutive_bad_updates += 1
+                        print(
+                            f"WARNING: skipped non-finite gradient update; "
+                            f"attempted_step={global_step + skipped_updates} "
+                            f"global_step={global_step} grad_norm={float(grad_norm)} "
+                            f"amp_scale={old_scale}->{new_scale} "
+                            f"consecutive_skips={consecutive_bad_updates}/"
+                            f"{max_consecutive_bad_updates}",
+                            flush=True,
+                        )
+                        if consecutive_bad_updates >= max_consecutive_bad_updates:
+                            raise FloatingPointError(
+                                f"{consecutive_bad_updates} consecutive non-finite gradient updates; "
+                                "stopping rather than silently training through instability"
+                            )
                     else:
-                        optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    if scheduler is not None:
-                        scheduler.step()
-                    global_step += 1
+                        if scaler.is_enabled():
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        if scheduler is not None:
+                            scheduler.step()
+                        global_step += 1
+                        consecutive_bad_updates = 0
 
                 train_metrics.update(
                     logits.detach().float(), batch["target_labels"], batch["option_mask"],
@@ -353,6 +398,7 @@ def main() -> int:
                     "supervised_loss": sums["supervised"] / denom,
                     "reward_mean": sums["reward"] / denom,
                     "group_size": group_size,
+                    "skipped_nonfinite_updates": skipped_updates,
                 },
                 "train": train_result,
                 "val": val_result,

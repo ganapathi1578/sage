@@ -172,3 +172,8 @@ python -m scripts.evaluate_calibration \
 The calibration script reports top-1 ECE / multiclass Brier / NLL for single-choice rows and option-level binary ECE / Brier / NLL for multi-label rows. It does not fit a temperature. Post-hoc per-task temperature fitting is a separate calibration stage and should use a designated calibration subset, never the test set.
 
 Do not use test metrics to pick epochs or tune RLCD hyperparameters. Compare the selected RLCD model with the supervised baseline using the exact same test split and evaluation code. Report single-choice accuracy, multi-label F1/exact match, selection score, task-family breakdowns, and calibration metrics.
+
+
+## FP16 non-finite gradient handling
+
+The trainer checks logits and the combined objective for non-finite values before backward. If a gradient norm becomes non-finite at an optimizer boundary, it discards the accumulated gradient window and reduces the FP16 GradScaler scale by half. The skipped step does not advance the optimizer scheduler or successful `global_step`. Three consecutive non-finite gradient windows stop the run rather than silently continuing. This handles transient FP16 gradient overflow; it does not mask non-finite logits or objective values, which fail immediately with the offending microbatch number. Such a failure should be investigated rather than blindly retried.
